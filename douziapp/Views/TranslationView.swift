@@ -13,7 +13,6 @@ struct TranslationView: View {
     @StateObject private var ttsService = TextToSpeechService()
     @EnvironmentObject var appSettings: AppSettings
 
-    @State private var isRecording = false
     @State private var showingPermissionAlert = false
 
     var body: some View {
@@ -24,11 +23,16 @@ struct TranslationView: View {
 
                 ScrollView {
                     VStack(spacing: 20) {
+                        // ステータス表示
+                        if !speechService.errorMessage.isEmpty {
+                            ErrorBanner(message: speechService.errorMessage)
+                        }
+
                         // 英語（原文）表示エリア
                         SourceTextCard(
                             text: speechService.recognizedText,
                             language: "English",
-                            isActive: isRecording
+                            isActive: speechService.isListening
                         )
 
                         // 矢印アイコン
@@ -79,11 +83,18 @@ struct TranslationView: View {
     // MARK: - Subviews
 
     private var headerView: some View {
-        HStack {
-            LanguageBadge(language: "EN", flag: "🇺🇸")
-            Image(systemName: "arrow.right")
+        VStack(spacing: 8) {
+            HStack {
+                LanguageBadge(language: "EN", flag: "🇺🇸")
+                Image(systemName: "arrow.right")
+                    .foregroundStyle(.secondary)
+                LanguageBadge(language: "JA", flag: "🇯🇵")
+            }
+
+            // 認証ステータス表示
+            Text("ステータス: \(speechService.authorizationStatus)")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
-            LanguageBadge(language: "JA", flag: "🇯🇵")
         }
         .padding()
         .background(Color(.systemBackground))
@@ -92,14 +103,14 @@ struct TranslationView: View {
     private var recordingControlView: some View {
         VStack(spacing: 16) {
             // 録音ボタン
-            RecordButton(isRecording: $isRecording) {
+            RecordButton(isRecording: $speechService.isListening) {
                 toggleRecording()
             }
 
             // ステータステキスト
-            Text(isRecording ? "タップして停止" : "タップして開始")
+            Text(speechService.isListening ? "🎤 認識中... タップして停止" : "タップして開始")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(speechService.isListening ? .red : .secondary)
         }
         .padding(.vertical, 24)
         .padding(.bottom, 8)
@@ -109,20 +120,41 @@ struct TranslationView: View {
     // MARK: - Actions
 
     private func toggleRecording() {
-        if isRecording {
+        if speechService.isListening {
             speechService.stopListening()
-            isRecording = false
         } else {
             Task {
                 let authorized = await speechService.requestAuthorization()
                 if authorized {
-                    try? speechService.startListening()
-                    isRecording = true
+                    do {
+                        try speechService.startListening()
+                    } catch {
+                        print("録音開始エラー: \(error)")
+                    }
                 } else {
                     showingPermissionAlert = true
                 }
             }
         }
+    }
+}
+
+// MARK: - Error Banner
+
+struct ErrorBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+        }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(Color.orange.opacity(0.1))
+        .cornerRadius(8)
     }
 }
 

@@ -40,8 +40,11 @@ struct RecordButton: View {
                         .foregroundStyle(.white)
                 }
             }
+            .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
+        .frame(width: 100, height: 100)
+        .contentShape(Rectangle())
         .onChange(of: isRecording) { _, newValue in
             if newValue {
                 withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: false)) {
