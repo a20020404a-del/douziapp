@@ -2,7 +2,7 @@
 //  TranslationService.swift
 //  douziapp
 //
-//  翻訳API連携サービス（DeepL/Google Translation対応）
+//  翻訳API連携サービス - MyMemory API（無料）を使用
 //
 
 import Foundation
@@ -13,24 +13,33 @@ class TranslationService: ObservableObject {
 
     @Published var translatedText: String = ""
     @Published var isTranslating: Bool = false
-    @Published var error: TranslationError?
+    @Published var errorMessage: String = ""
 
     // MARK: - Private Properties
 
     private var translateTask: Task<Void, Never>?
-    private var lastTranslatedText: String = ""
-    private let debounceDelay: TimeInterval = 0.5
+    private var lastSourceText: String = ""
+    private let debounceDelay: TimeInterval = 0.3
 
-    // API設定（実際の運用ではKeychain等で安全に管理）
-    private let apiKey: String = ProcessInfo.processInfo.environment["DEEPL_API_KEY"] ?? ""
-    private let apiEndpoint = "https://api-free.deepl.com/v2/translate"
+    // キャッシュ（同じテキストの再翻訳を防ぐ）
+    private var translationCache: [String: String] = [:]
 
     // MARK: - Public Methods
 
-    /// テキストを翻訳
-    func translate(text: String, from: Language = .english, to: Language = .japanese) async {
-        // 空文字や同一テキストはスキップ
-        guard !text.isEmpty, text != lastTranslatedText else { return }
+    /// テキストを翻訳（英語→日本語）
+    func translate(text: String) async {
+        // 空文字はスキップ
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        // 同一テキストはスキップ
+        guard text != lastSourceText else { return }
+
+        // キャッシュをチェック
+        if let cached = translationCache[text] {
+            translatedText = cached
+            lastSourceText = text
+            return
+        }
 
         // 既存のタスクをキャンセル（デバウンス）
         translateTask?.cancel()
@@ -38,170 +47,117 @@ class TranslationService: ObservableObject {
         translateTask = Task {
             // デバウンス待機
             try? await Task.sleep(nanoseconds: UInt64(debounceDelay * 1_000_000_000))
-
             guard !Task.isCancelled else { return }
 
             isTranslating = true
-            defer { isTranslating = false }
+            errorMessage = ""
 
             do {
-                let result = try await performTranslation(text: text, from: from, to: to)
+                // MyMemory API を使用
+                let result = try await translateWithMyMemory(text: text, from: "en", to: "ja")
+
                 if !Task.isCancelled {
                     translatedText = result
-                    lastTranslatedText = text
+                    lastSourceText = text
+                    translationCache[text] = result
+                    print("翻訳成功: \(text) → \(result)")
                 }
             } catch {
                 if !Task.isCancelled {
-                    self.error = .translationFailed(error.localizedDescription)
-                    // フォールバック: ダミー翻訳（デモ用）
-                    translatedText = fallbackTranslation(text: text)
+                    errorMessage = "翻訳エラー: \(error.localizedDescription)"
+                    print("翻訳エラー: \(error)")
+                    // フォールバック翻訳を使用
+                    translatedText = "【翻訳中】\(text)"
                 }
             }
+
+            isTranslating = false
         }
     }
 
     /// 翻訳結果をクリア
     func clearTranslation() {
         translatedText = ""
-        lastTranslatedText = ""
+        lastSourceText = ""
+        errorMessage = ""
     }
 
-    // MARK: - Private Methods
+    // MARK: - MyMemory API (無料・APIキー不要)
 
-    private func performTranslation(text: String, from: Language, to: Language) async throws -> String {
-        // APIキーが設定されていない場合はフォールバック
-        guard !apiKey.isEmpty else {
-            return fallbackTranslation(text: text)
+    private func translateWithMyMemory(text: String, from sourceLang: String, to targetLang: String) async throws -> String {
+        // URLエンコード
+        guard let encodedText = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+            throw TranslationError.invalidInput
         }
 
-        // DeepL API リクエスト
-        var request = URLRequest(url: URL(string: apiEndpoint)!)
-        request.httpMethod = "POST"
-        request.setValue("DeepL-Auth-Key \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        // MyMemory API URL
+        let urlString = "https://api.mymemory.translated.net/get?q=\(encodedText)&langpair=\(sourceLang)|\(targetLang)"
 
-        let body = "text=\(text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text)&source_lang=\(from.code)&target_lang=\(to.code)"
-        request.httpBody = body.data(using: .utf8)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw TranslationError.apiError
+        guard let url = URL(string: urlString) else {
+            throw TranslationError.invalidURL
         }
 
-        let deeplResponse = try JSONDecoder().decode(DeepLResponse.self, from: data)
-        return deeplResponse.translations.first?.text ?? ""
-    }
+        // APIリクエスト
+        let (data, response) = try await URLSession.shared.data(from: url)
 
-    /// フォールバック翻訳（デモ用・オフライン用）
-    private func fallbackTranslation(text: String) -> String {
-        // 簡易的な辞書ベース翻訳（デモ用）
-        let translations: [String: String] = [
-            "hello": "こんにちは",
-            "goodbye": "さようなら",
-            "thank you": "ありがとうございます",
-            "yes": "はい",
-            "no": "いいえ",
-            "good morning": "おはようございます",
-            "good evening": "こんばんは",
-            "how are you": "お元気ですか",
-            "nice to meet you": "はじめまして",
-            "please": "お願いします",
-            "sorry": "すみません",
-            "excuse me": "失礼します"
-        ]
-
-        let lowercased = text.lowercased()
-        for (english, japanese) in translations {
-            if lowercased.contains(english) {
-                return japanese
-            }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TranslationError.invalidResponse
         }
 
-        // マッチしない場合は「翻訳中...」を返す
-        return "【翻訳】\(text)"
+        guard httpResponse.statusCode == 200 else {
+            throw TranslationError.apiError(statusCode: httpResponse.statusCode)
+        }
+
+        // JSONパース
+        let myMemoryResponse = try JSONDecoder().decode(MyMemoryResponse.self, from: data)
+
+        // 翻訳結果を取得
+        guard let translatedText = myMemoryResponse.responseData?.translatedText,
+              !translatedText.isEmpty else {
+            throw TranslationError.emptyResponse
+        }
+
+        return translatedText
     }
 }
 
-// MARK: - Language Enum
+// MARK: - MyMemory API Response Models
 
-enum Language: String, CaseIterable {
-    case english
-    case japanese
-    case chinese
-    case korean
-    case french
-    case spanish
-    case vietnamese
+struct MyMemoryResponse: Codable {
+    let responseData: ResponseData?
+    let responseStatus: Int?
+    let responseDetails: String?
 
-    var code: String {
-        switch self {
-        case .english: return "EN"
-        case .japanese: return "JA"
-        case .chinese: return "ZH"
-        case .korean: return "KO"
-        case .french: return "FR"
-        case .spanish: return "ES"
-        case .vietnamese: return "VI"
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .english: return "英語"
-        case .japanese: return "日本語"
-        case .chinese: return "中国語"
-        case .korean: return "韓国語"
-        case .french: return "フランス語"
-        case .spanish: return "スペイン語"
-        case .vietnamese: return "ベトナム語"
-        }
-    }
-
-    var flag: String {
-        switch self {
-        case .english: return "🇺🇸"
-        case .japanese: return "🇯🇵"
-        case .chinese: return "🇨🇳"
-        case .korean: return "🇰🇷"
-        case .french: return "🇫🇷"
-        case .spanish: return "🇪🇸"
-        case .vietnamese: return "🇻🇳"
-        }
-    }
-}
-
-// MARK: - API Response Models
-
-struct DeepLResponse: Codable {
-    let translations: [DeepLTranslation]
-}
-
-struct DeepLTranslation: Codable {
-    let detectedSourceLanguage: String?
-    let text: String
-
-    enum CodingKeys: String, CodingKey {
-        case detectedSourceLanguage = "detected_source_language"
-        case text
+    struct ResponseData: Codable {
+        let translatedText: String?
+        let match: Double?
     }
 }
 
 // MARK: - Error Types
 
 enum TranslationError: LocalizedError {
-    case apiError
+    case invalidInput
+    case invalidURL
     case invalidResponse
-    case translationFailed(String)
+    case apiError(statusCode: Int)
+    case emptyResponse
+    case networkError(String)
 
     var errorDescription: String? {
         switch self {
-        case .apiError:
-            return "翻訳APIエラー"
+        case .invalidInput:
+            return "無効な入力テキスト"
+        case .invalidURL:
+            return "無効なURL"
         case .invalidResponse:
             return "無効なレスポンス"
-        case .translationFailed(let message):
-            return "翻訳エラー: \(message)"
+        case .apiError(let statusCode):
+            return "APIエラー (コード: \(statusCode))"
+        case .emptyResponse:
+            return "翻訳結果が空です"
+        case .networkError(let message):
+            return "ネットワークエラー: \(message)"
         }
     }
 }

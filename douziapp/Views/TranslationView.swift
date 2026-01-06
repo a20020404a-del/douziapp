@@ -23,9 +23,12 @@ struct TranslationView: View {
 
                 ScrollView {
                     VStack(spacing: 20) {
-                        // ステータス表示
+                        // エラー表示
                         if !speechService.errorMessage.isEmpty {
                             ErrorBanner(message: speechService.errorMessage)
+                        }
+                        if !translationService.errorMessage.isEmpty {
+                            ErrorBanner(message: translationService.errorMessage)
                         }
 
                         // 英語（原文）表示エリア
