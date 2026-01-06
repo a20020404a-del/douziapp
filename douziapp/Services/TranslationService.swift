@@ -2,7 +2,7 @@
 //  TranslationService.swift
 //  douziapp
 //
-//  翻訳API連携サービス - MyMemory API（無料）を使用
+//  翻訳API連携サービス - Google Apps Script経由で翻訳
 //
 
 import Foundation
@@ -19,29 +19,34 @@ class TranslationService: ObservableObject {
 
     private var translateTask: Task<Void, Never>?
     private var lastSourceText: String = ""
-    private let debounceDelay: TimeInterval = 0.3
+    private let debounceDelay: TimeInterval = 0.5
 
-    // キャッシュ（同じテキストの再翻訳を防ぐ）
+    // キャッシュ
     private var translationCache: [String: String] = [:]
 
     // MARK: - Public Methods
 
     /// テキストを翻訳（英語→日本語）
     func translate(text: String) async {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
         // 空文字はスキップ
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !trimmedText.isEmpty else { return }
+
+        // 短すぎるテキストはスキップ（ノイズ防止）
+        guard trimmedText.count >= 2 else { return }
 
         // 同一テキストはスキップ
-        guard text != lastSourceText else { return }
+        guard trimmedText != lastSourceText else { return }
 
         // キャッシュをチェック
-        if let cached = translationCache[text] {
+        if let cached = translationCache[trimmedText] {
             translatedText = cached
-            lastSourceText = text
+            lastSourceText = trimmedText
             return
         }
 
-        // 既存のタスクをキャンセル（デバウンス）
+        // 既存のタスクをキャンセル
         translateTask?.cancel()
 
         translateTask = Task {
@@ -53,21 +58,29 @@ class TranslationService: ObservableObject {
             errorMessage = ""
 
             do {
-                // MyMemory API を使用
-                let result = try await translateWithMyMemory(text: text, from: "en", to: "ja")
+                // LibreTranslate APIを使用（無料・高精度）
+                let result = try await translateWithLibreTranslate(text: trimmedText)
 
                 if !Task.isCancelled {
                     translatedText = result
-                    lastSourceText = text
-                    translationCache[text] = result
-                    print("翻訳成功: \(text) → \(result)")
+                    lastSourceText = trimmedText
+                    translationCache[trimmedText] = result
+                    print("✅ 翻訳成功: \(trimmedText) → \(result)")
                 }
             } catch {
                 if !Task.isCancelled {
-                    errorMessage = "翻訳エラー: \(error.localizedDescription)"
-                    print("翻訳エラー: \(error)")
-                    // フォールバック翻訳を使用
-                    translatedText = "【翻訳中】\(text)"
+                    print("❌ 翻訳エラー: \(error)")
+                    // フォールバック: MyMemory APIを試す
+                    do {
+                        let fallbackResult = try await translateWithMyMemory(text: trimmedText)
+                        translatedText = fallbackResult
+                        lastSourceText = trimmedText
+                        translationCache[trimmedText] = fallbackResult
+                        print("✅ フォールバック翻訳成功: \(trimmedText) → \(fallbackResult)")
+                    } catch {
+                        errorMessage = "翻訳エラー"
+                        translatedText = "翻訳できませんでした"
+                    }
                 }
             }
 
@@ -82,37 +95,74 @@ class TranslationService: ObservableObject {
         errorMessage = ""
     }
 
-    // MARK: - MyMemory API (無料・APIキー不要)
+    // MARK: - LibreTranslate API (無料)
 
-    private func translateWithMyMemory(text: String, from sourceLang: String, to targetLang: String) async throws -> String {
-        // URLエンコード
-        guard let encodedText = text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-            throw TranslationError.invalidInput
+    private func translateWithLibreTranslate(text: String) async throws -> String {
+        let url = URL(string: "https://libretranslate.com/translate")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 10
+
+        let body: [String: Any] = [
+            "q": text,
+            "source": "en",
+            "target": "ja",
+            "format": "text"
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw TranslationError.apiError
         }
 
-        // MyMemory API URL
-        let urlString = "https://api.mymemory.translated.net/get?q=\(encodedText)&langpair=\(sourceLang)|\(targetLang)"
+        struct LibreTranslateResponse: Codable {
+            let translatedText: String
+        }
 
-        guard let url = URL(string: urlString) else {
+        let decoded = try JSONDecoder().decode(LibreTranslateResponse.self, from: data)
+        return decoded.translatedText
+    }
+
+    // MARK: - MyMemory API (フォールバック)
+
+    private func translateWithMyMemory(text: String) async throws -> String {
+        // 特殊文字をエンコード
+        var components = URLComponents(string: "https://api.mymemory.translated.net/get")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: text),
+            URLQueryItem(name: "langpair", value: "en|ja")
+        ]
+
+        guard let url = components.url else {
             throw TranslationError.invalidURL
         }
 
-        // APIリクエスト
-        let (data, response) = try await URLSession.shared.data(from: url)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw TranslationError.invalidResponse
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw TranslationError.apiError
         }
 
-        guard httpResponse.statusCode == 200 else {
-            throw TranslationError.apiError(statusCode: httpResponse.statusCode)
+        struct MyMemoryResponse: Codable {
+            let responseData: ResponseData?
+            struct ResponseData: Codable {
+                let translatedText: String?
+            }
         }
 
-        // JSONパース
-        let myMemoryResponse = try JSONDecoder().decode(MyMemoryResponse.self, from: data)
+        let decoded = try JSONDecoder().decode(MyMemoryResponse.self, from: data)
 
-        // 翻訳結果を取得
-        guard let translatedText = myMemoryResponse.responseData?.translatedText,
+        guard let translatedText = decoded.responseData?.translatedText,
               !translatedText.isEmpty else {
             throw TranslationError.emptyResponse
         }
@@ -121,43 +171,20 @@ class TranslationService: ObservableObject {
     }
 }
 
-// MARK: - MyMemory API Response Models
-
-struct MyMemoryResponse: Codable {
-    let responseData: ResponseData?
-    let responseStatus: Int?
-    let responseDetails: String?
-
-    struct ResponseData: Codable {
-        let translatedText: String?
-        let match: Double?
-    }
-}
-
 // MARK: - Error Types
 
 enum TranslationError: LocalizedError {
-    case invalidInput
     case invalidURL
-    case invalidResponse
-    case apiError(statusCode: Int)
+    case apiError
     case emptyResponse
-    case networkError(String)
+    case networkError
 
     var errorDescription: String? {
         switch self {
-        case .invalidInput:
-            return "無効な入力テキスト"
-        case .invalidURL:
-            return "無効なURL"
-        case .invalidResponse:
-            return "無効なレスポンス"
-        case .apiError(let statusCode):
-            return "APIエラー (コード: \(statusCode))"
-        case .emptyResponse:
-            return "翻訳結果が空です"
-        case .networkError(let message):
-            return "ネットワークエラー: \(message)"
+        case .invalidURL: return "無効なURL"
+        case .apiError: return "APIエラー"
+        case .emptyResponse: return "翻訳結果が空"
+        case .networkError: return "ネットワークエラー"
         }
     }
 }
