@@ -134,14 +134,25 @@ class SpeechRecognitionService: ObservableObject {
                 }
 
                 if let error = error {
-                    // 認識が終了した場合のエラーは無視
                     let nsError = error as NSError
-                    if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 {
-                        // 音声入力がなかった場合 - 正常
+
+                    // 正常終了のエラーコードは無視（ユーザーに表示しない）
+                    let normalTerminationCodes = [
+                        203,  // Retry
+                        216,  // 音声入力終了
+                        301,  // 認識セッション終了
+                        1110  // 音声入力なし
+                    ]
+
+                    if nsError.domain == "kAFAssistantErrorDomain" &&
+                       normalTerminationCodes.contains(nsError.code) {
+                        print("📍 音声認識セッション終了 (コード: \(nsError.code))")
                         return
                     }
+
+                    // 本当のエラーのみ表示
                     self.errorMessage = "認識エラー: \(error.localizedDescription)"
-                    print("認識エラー: \(error)")
+                    print("❌ 認識エラー: \(error)")
                 }
             }
         }
