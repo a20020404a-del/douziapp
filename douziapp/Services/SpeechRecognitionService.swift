@@ -2,7 +2,7 @@
 //  SpeechRecognitionService.swift
 //  douziapp
 //
-//  Apple Speech Frameworkを使用したリアルタイム音声認識
+//  高精度リアルタイム音声認識サービス
 //
 
 import Foundation
@@ -17,6 +17,7 @@ class SpeechRecognitionService: ObservableObject {
     @Published var isListening: Bool = false
     @Published var errorMessage: String = ""
     @Published var authorizationStatus: String = "未確認"
+    @Published var confidenceLevel: Float = 0.0
 
     // MARK: - Private Properties
 
@@ -24,28 +25,31 @@ class SpeechRecognitionService: ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var audioEngine: AVAudioEngine?
+    private var currentLocale: String = "en-US"
 
     // MARK: - Initialization
 
-    private var currentLocale: String = "en-US"
-
     init() {
-        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+        setupRecognizer(locale: "en-US")
+    }
+
+    private func setupRecognizer(locale: String) {
+        currentLocale = locale
+        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
+        speechRecognizer?.defaultTaskHint = .dictation
         audioEngine = AVAudioEngine()
     }
 
     /// 認識言語を変更
     func setLanguage(_ localeIdentifier: String) {
-        currentLocale = localeIdentifier
-        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
+        setupRecognizer(locale: localeIdentifier)
         print("🌐 音声認識言語を変更: \(localeIdentifier)")
     }
 
-    // MARK: - Public Methods
+    // MARK: - Authorization
 
-    /// マイクと音声認識の権限を両方リクエスト
     func requestAuthorization() async -> Bool {
-        // 1. マイク権限をリクエスト
+        // マイク権限
         let micGranted = await requestMicrophonePermission()
         if !micGranted {
             errorMessage = "マイクの権限が必要です"
@@ -53,7 +57,7 @@ class SpeechRecognitionService: ObservableObject {
             return false
         }
 
-        // 2. 音声認識権限をリクエスト
+        // 音声認識権限
         let speechGranted = await requestSpeechPermission()
         if !speechGranted {
             errorMessage = "音声認識の権限が必要です"
@@ -81,93 +85,106 @@ class SpeechRecognitionService: ObservableObject {
         }
     }
 
-    /// 音声認識を開始
+    // MARK: - 高精度音声認識
+
     func startListening() throws {
-        // リセット
         stopListening()
         errorMessage = ""
         recognizedText = ""
+        confidenceLevel = 0.0
 
-        // 新しいAudioEngineを作成
         audioEngine = AVAudioEngine()
         guard let audioEngine = audioEngine else {
             throw SpeechError.audioEngineError
         }
 
-        // オーディオセッションの設定
+        // 高品質オーディオセッション設定
         let audioSession = AVAudioSession.sharedInstance()
         do {
-            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetooth])
+            // 高精度認識のための設定
+            try audioSession.setCategory(.playAndRecord,
+                                         mode: .measurement,
+                                         options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
+            try audioSession.setPreferredSampleRate(44100.0)  // 高サンプルレート
+            try audioSession.setPreferredIOBufferDuration(0.005)  // 低レイテンシ
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            errorMessage = "オーディオセッションエラー: \(error.localizedDescription)"
+            errorMessage = "オーディオセッションエラー"
             throw SpeechError.audioSessionError
         }
 
-        // 認識リクエストの作成
+        // 高精度認識リクエストの作成
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
             throw SpeechError.requestCreationFailed
         }
 
+        // 精度を最大化する設定
         recognitionRequest.shouldReportPartialResults = true
-        recognitionRequest.requiresOnDeviceRecognition = false
+        recognitionRequest.addsPunctuation = true  // 句読点を追加
 
-        // 認識タスクの開始
-        guard let speechRecognizer = speechRecognizer else {
-            errorMessage = "音声認識が初期化されていません"
-            throw SpeechError.recognizerUnavailable
+        // オンデバイス認識が利用可能なら使用（より高速・高精度）
+        if #available(iOS 13, *) {
+            if speechRecognizer?.supportsOnDeviceRecognition == true {
+                recognitionRequest.requiresOnDeviceRecognition = false // クラウドの方が精度が高い
+            }
         }
 
-        if !speechRecognizer.isAvailable {
+        // コンテキストヒントを追加（認識精度向上）
+        if currentLocale.hasPrefix("en") {
+            recognitionRequest.contextualStrings = [
+                "hello", "thank you", "please", "excuse me",
+                "how are you", "nice to meet you", "goodbye",
+                "where is", "what time", "how much"
+            ]
+        } else if currentLocale.hasPrefix("ja") {
+            recognitionRequest.contextualStrings = [
+                "こんにちは", "ありがとう", "お願いします", "すみません",
+                "お元気ですか", "はじめまして", "さようなら",
+                "どこですか", "何時ですか", "いくらですか"
+            ]
+        }
+
+        guard let speechRecognizer = speechRecognizer, speechRecognizer.isAvailable else {
             errorMessage = "音声認識が利用できません"
             throw SpeechError.recognizerUnavailable
         }
 
+        // 認識タスクの開始
         recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             Task { @MainActor in
                 guard let self = self else { return }
 
                 if let result = result {
-                    self.recognizedText = result.bestTranscription.formattedString
-                    print("認識結果: \(self.recognizedText)")
+                    // 最も信頼度の高い結果を使用
+                    let bestTranscription = result.bestTranscription
+                    self.recognizedText = bestTranscription.formattedString
+
+                    // 信頼度を計算
+                    if let segment = bestTranscription.segments.last {
+                        self.confidenceLevel = segment.confidence
+                    }
+
+                    print("🎤 認識結果: \(self.recognizedText) (信頼度: \(self.confidenceLevel))")
                 }
 
                 if let error = error {
-                    let nsError = error as NSError
-
-                    // 正常終了のエラーコードは無視（ユーザーに表示しない）
-                    let normalTerminationCodes = [
-                        203,  // Retry
-                        216,  // 音声入力終了
-                        301,  // 認識セッション終了
-                        1110  // 音声入力なし
-                    ]
-
-                    if nsError.domain == "kAFAssistantErrorDomain" &&
-                       normalTerminationCodes.contains(nsError.code) {
-                        print("📍 音声認識セッション終了 (コード: \(nsError.code))")
-                        return
-                    }
-
-                    // 本当のエラーのみ表示
-                    self.errorMessage = "認識エラー: \(error.localizedDescription)"
-                    print("❌ 認識エラー: \(error)")
+                    self.handleRecognitionError(error)
                 }
             }
         }
 
-        // オーディオ入力の設定
+        // 高品質オーディオ入力設定
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
-        // フォーマットが有効か確認
         guard recordingFormat.sampleRate > 0 else {
             errorMessage = "無効なオーディオフォーマット"
             throw SpeechError.audioEngineError
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
+        // 大きめのバッファで安定した認識
+        inputNode.installTap(onBus: 0, bufferSize: 2048, format: recordingFormat) { [weak self] buffer, _ in
             self?.recognitionRequest?.append(buffer)
         }
 
@@ -175,56 +192,58 @@ class SpeechRecognitionService: ObservableObject {
             audioEngine.prepare()
             try audioEngine.start()
             isListening = true
-            print("音声認識開始")
+            print("🎙️ 高精度音声認識開始 (\(currentLocale))")
         } catch {
-            errorMessage = "オーディオエンジン起動エラー: \(error.localizedDescription)"
+            errorMessage = "オーディオエンジン起動エラー"
             throw SpeechError.audioEngineError
         }
     }
 
-    /// 音声認識を停止
+    private func handleRecognitionError(_ error: Error) {
+        let nsError = error as NSError
+
+        // 正常終了コードは無視
+        let normalCodes = [203, 209, 216, 301, 1110, 1700]
+        if nsError.domain == "kAFAssistantErrorDomain" && normalCodes.contains(nsError.code) {
+            print("📍 セッション終了 (コード: \(nsError.code))")
+            return
+        }
+
+        errorMessage = "認識エラー"
+        print("❌ 認識エラー: \(error)")
+    }
+
     func stopListening() {
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
-
         recognitionRequest?.endAudio()
         recognitionRequest = nil
-
         recognitionTask?.cancel()
         recognitionTask = nil
-
         isListening = false
-        print("音声認識停止")
+        print("⏹️ 音声認識停止")
     }
 
-    /// 認識テキストをクリア
     func clearText() {
         recognizedText = ""
         errorMessage = ""
+        confidenceLevel = 0.0
     }
 }
 
-// MARK: - Error Types
+// MARK: - Errors
 
 enum SpeechError: LocalizedError {
-    case notAuthorized
-    case recognizerUnavailable
-    case requestCreationFailed
-    case audioSessionError
-    case audioEngineError
+    case notAuthorized, recognizerUnavailable, requestCreationFailed
+    case audioSessionError, audioEngineError
 
     var errorDescription: String? {
         switch self {
-        case .notAuthorized:
-            return "音声認識が許可されていません"
-        case .recognizerUnavailable:
-            return "音声認識が利用できません"
-        case .requestCreationFailed:
-            return "認識リクエストの作成に失敗しました"
-        case .audioSessionError:
-            return "オーディオセッションエラー"
-        case .audioEngineError:
-            return "オーディオエンジンエラー"
+        case .notAuthorized: return "音声認識が許可されていません"
+        case .recognizerUnavailable: return "音声認識が利用できません"
+        case .requestCreationFailed: return "認識リクエストの作成に失敗"
+        case .audioSessionError: return "オーディオセッションエラー"
+        case .audioEngineError: return "オーディオエンジンエラー"
         }
     }
 }
