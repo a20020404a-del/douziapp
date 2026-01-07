@@ -6,8 +6,10 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct TranslationView: View {
+    @Environment(\.modelContext) private var modelContext
     @StateObject private var speechService = SpeechRecognitionService()
     @StateObject private var translationService = TranslationService()
     @StateObject private var ttsService = TextToSpeechService()
@@ -15,6 +17,7 @@ struct TranslationView: View {
 
     @State private var showingPermissionAlert = false
     @State private var isEnglishToJapanese = true // true: EN→JA, false: JA→EN
+    @State private var lastSavedSourceText: String = "" // 重複保存防止用
 
     var sourceLanguage: (code: String, name: String, flag: String) {
         isEnglishToJapanese ? ("en-US", "English", "🇺🇸") : ("ja-JP", "日本語", "🇯🇵")
@@ -173,6 +176,8 @@ struct TranslationView: View {
 
     private func toggleRecording() {
         if speechService.isListening {
+            // 録音停止時に履歴を保存
+            saveToHistory()
             speechService.stopListening()
         } else {
             Task {
@@ -190,6 +195,31 @@ struct TranslationView: View {
                 }
             }
         }
+    }
+
+    /// 翻訳結果を履歴に保存
+    private func saveToHistory() {
+        let sourceText = speechService.recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translatedText = translationService.translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 空でない、かつ前回と異なる場合のみ保存
+        guard !sourceText.isEmpty,
+              !translatedText.isEmpty,
+              sourceText != lastSavedSourceText else {
+            return
+        }
+
+        let record = TranslationRecord(
+            sourceText: sourceText,
+            translatedText: translatedText,
+            sourceLanguage: isEnglishToJapanese ? "en" : "ja",
+            targetLanguage: isEnglishToJapanese ? "ja" : "en"
+        )
+
+        modelContext.insert(record)
+        lastSavedSourceText = sourceText
+
+        print("📝 履歴に保存: \(sourceText) → \(translatedText)")
     }
 }
 

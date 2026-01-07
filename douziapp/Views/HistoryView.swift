@@ -143,16 +143,29 @@ struct HistoryView: View {
 struct HistoryRowView: View {
     let record: TranslationRecord
 
+    private var sourceFlag: String {
+        record.sourceLanguage == "en" ? "🇺🇸" : "🇯🇵"
+    }
+
+    private var targetFlag: String {
+        record.targetLanguage == "en" ? "🇺🇸" : "🇯🇵"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 時刻
-            Text(record.timestamp.formatted(date: .omitted, time: .shortened))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            // 時刻と言語方向
+            HStack {
+                Text(record.timestamp.formatted(date: .omitted, time: .shortened))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(sourceFlag)→\(targetFlag)")
+                    .font(.caption2)
+            }
 
             // 原文
             HStack(alignment: .top, spacing: 8) {
-                Text("🇺🇸")
+                Text(sourceFlag)
                     .font(.caption)
                 Text(record.sourceText)
                     .font(.subheadline)
@@ -161,7 +174,7 @@ struct HistoryRowView: View {
 
             // 翻訳
             HStack(alignment: .top, spacing: 8) {
-                Text("🇯🇵")
+                Text(targetFlag)
                     .font(.caption)
                 Text(record.translatedText)
                     .font(.subheadline)
