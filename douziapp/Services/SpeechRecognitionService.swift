@@ -27,9 +27,18 @@ class SpeechRecognitionService: ObservableObject {
 
     // MARK: - Initialization
 
+    private var currentLocale: String = "en-US"
+
     init() {
         speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
         audioEngine = AVAudioEngine()
+    }
+
+    /// 認識言語を変更
+    func setLanguage(_ localeIdentifier: String) {
+        currentLocale = localeIdentifier
+        speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
+        print("🌐 音声認識言語を変更: \(localeIdentifier)")
     }
 
     // MARK: - Public Methods

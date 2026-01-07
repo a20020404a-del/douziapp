@@ -26,8 +26,12 @@ class TranslationService: ObservableObject {
 
     // MARK: - Public Methods
 
-    /// テキストを翻訳（英語→日本語）
-    func translate(text: String) async {
+    // 現在の翻訳方向
+    private var currentSourceLang: String = "en"
+    private var currentTargetLang: String = "ja"
+
+    /// テキストを翻訳（双方向対応）
+    func translate(text: String, from sourceLang: String = "en", to targetLang: String = "ja") async {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 空文字はスキップ
@@ -36,11 +40,19 @@ class TranslationService: ObservableObject {
         // 短すぎるテキストはスキップ（ノイズ防止）
         guard trimmedText.count >= 2 else { return }
 
+        // 言語が変わったらキャッシュをクリア
+        if sourceLang != currentSourceLang || targetLang != currentTargetLang {
+            translationCache.removeAll()
+            currentSourceLang = sourceLang
+            currentTargetLang = targetLang
+        }
+
         // 同一テキストはスキップ
         guard trimmedText != lastSourceText else { return }
 
         // キャッシュをチェック
-        if let cached = translationCache[trimmedText] {
+        let cacheKey = "\(sourceLang)|\(targetLang)|\(trimmedText)"
+        if let cached = translationCache[cacheKey] {
             translatedText = cached
             lastSourceText = trimmedText
             return
@@ -58,24 +70,24 @@ class TranslationService: ObservableObject {
             errorMessage = ""
 
             do {
-                // LibreTranslate APIを使用（無料・高精度）
-                let result = try await translateWithLibreTranslate(text: trimmedText)
+                // LibreTranslate APIを使用
+                let result = try await translateWithLibreTranslate(text: trimmedText, from: sourceLang, to: targetLang)
 
                 if !Task.isCancelled {
                     translatedText = result
                     lastSourceText = trimmedText
-                    translationCache[trimmedText] = result
-                    print("✅ 翻訳成功: \(trimmedText) → \(result)")
+                    translationCache[cacheKey] = result
+                    print("✅ 翻訳成功 (\(sourceLang)→\(targetLang)): \(trimmedText) → \(result)")
                 }
             } catch {
                 if !Task.isCancelled {
                     print("❌ 翻訳エラー: \(error)")
                     // フォールバック: MyMemory APIを試す
                     do {
-                        let fallbackResult = try await translateWithMyMemory(text: trimmedText)
+                        let fallbackResult = try await translateWithMyMemory(text: trimmedText, from: sourceLang, to: targetLang)
                         translatedText = fallbackResult
                         lastSourceText = trimmedText
-                        translationCache[trimmedText] = fallbackResult
+                        translationCache[cacheKey] = fallbackResult
                         print("✅ フォールバック翻訳成功: \(trimmedText) → \(fallbackResult)")
                     } catch {
                         errorMessage = "翻訳エラー"
@@ -97,7 +109,7 @@ class TranslationService: ObservableObject {
 
     // MARK: - LibreTranslate API (無料)
 
-    private func translateWithLibreTranslate(text: String) async throws -> String {
+    private func translateWithLibreTranslate(text: String, from sourceLang: String, to targetLang: String) async throws -> String {
         let url = URL(string: "https://libretranslate.com/translate")!
 
         var request = URLRequest(url: url)
@@ -107,8 +119,8 @@ class TranslationService: ObservableObject {
 
         let body: [String: Any] = [
             "q": text,
-            "source": "en",
-            "target": "ja",
+            "source": sourceLang,
+            "target": targetLang,
             "format": "text"
         ]
 
@@ -131,12 +143,12 @@ class TranslationService: ObservableObject {
 
     // MARK: - MyMemory API (フォールバック)
 
-    private func translateWithMyMemory(text: String) async throws -> String {
+    private func translateWithMyMemory(text: String, from sourceLang: String, to targetLang: String) async throws -> String {
         // 特殊文字をエンコード
         var components = URLComponents(string: "https://api.mymemory.translated.net/get")!
         components.queryItems = [
             URLQueryItem(name: "q", value: text),
-            URLQueryItem(name: "langpair", value: "en|ja")
+            URLQueryItem(name: "langpair", value: "\(sourceLang)|\(targetLang)")
         ]
 
         guard let url = components.url else {
