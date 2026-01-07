@@ -73,10 +73,20 @@ class TranslationService: ObservableObject {
                     translatedText = translation
                     lastSourceText = trimmedText
                     translationCache[cacheKey] = translation
+                    errorMessage = "" // 成功時にエラーメッセージをクリア
                     print("✅ 翻訳成功 (\(sourceLang)→\(targetLang)): \(trimmedText) → \(translation)")
                 } else {
                     errorMessage = "翻訳に失敗しました"
                     translatedText = "翻訳できませんでした"
+                    // 3秒後にエラーメッセージを自動クリア
+                    Task {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        await MainActor.run {
+                            if self.errorMessage == "翻訳に失敗しました" {
+                                self.errorMessage = ""
+                            }
+                        }
+                    }
                 }
             }
 

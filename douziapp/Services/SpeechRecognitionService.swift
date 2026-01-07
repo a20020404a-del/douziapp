@@ -202,15 +202,27 @@ class SpeechRecognitionService: ObservableObject {
     private func handleRecognitionError(_ error: Error) {
         let nsError = error as NSError
 
-        // 正常終了コードは無視
+        // 正常終了コードは無視（エラーメッセージを表示しない）
         let normalCodes = [203, 209, 216, 301, 1110, 1700]
         if nsError.domain == "kAFAssistantErrorDomain" && normalCodes.contains(nsError.code) {
             print("📍 セッション終了 (コード: \(nsError.code))")
+            // 正常終了時はエラーメッセージをクリア
+            errorMessage = ""
             return
         }
 
         errorMessage = "認識エラー"
         print("❌ 認識エラー: \(error)")
+
+        // 3秒後にエラーメッセージを自動クリア
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            await MainActor.run {
+                if self.errorMessage == "認識エラー" {
+                    self.errorMessage = ""
+                }
+            }
+        }
     }
 
     func stopListening() {
@@ -221,6 +233,7 @@ class SpeechRecognitionService: ObservableObject {
         recognitionTask?.cancel()
         recognitionTask = nil
         isListening = false
+        errorMessage = "" // 停止時にエラーメッセージをクリア
         print("⏹️ 音声認識停止")
     }
 
