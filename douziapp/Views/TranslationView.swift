@@ -22,11 +22,31 @@ struct TranslationView: View {
     @State private var targetLanguage: Language = .japanese
     @State private var lastSavedSourceText: String = ""
 
+    // 入力モード
+    @State private var inputMode: InputMode = .voice
+    @State private var textInput: String = ""
+    @FocusState private var isTextFieldFocused: Bool
+
+    enum InputMode: String, CaseIterable {
+        case voice = "音声"
+        case text = "テキスト"
+
+        var icon: String {
+            switch self {
+            case .voice: return "mic.fill"
+            case .text: return "keyboard"
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 // ヘッダー（言語選択）
                 headerView
+
+                // 入力モード切り替え
+                inputModeSelector
 
                 ScrollView {
                     VStack(spacing: 20) {
@@ -38,12 +58,18 @@ struct TranslationView: View {
                             ErrorBanner(message: translationService.errorMessage)
                         }
 
-                        // 原文表示エリア
-                        SourceTextCard(
-                            text: speechService.recognizedText,
-                            language: sourceLanguage.name,
-                            isActive: speechService.isListening
-                        )
+                        // 入力モードに応じた表示
+                        if inputMode == .voice {
+                            // 音声入力：原文表示エリア
+                            SourceTextCard(
+                                text: speechService.recognizedText,
+                                language: sourceLanguage.name,
+                                isActive: speechService.isListening
+                            )
+                        } else {
+                            // テキスト入力
+                            textInputView
+                        }
 
                         // 矢印アイコン
                         Image(systemName: "arrow.down.circle.fill")
@@ -62,8 +88,12 @@ struct TranslationView: View {
 
                 Spacer()
 
-                // 録音コントロール
-                recordingControlView
+                // 入力モードに応じたコントロール
+                if inputMode == .voice {
+                    recordingControlView
+                } else {
+                    textInputControlView
+                }
             }
             .navigationTitle("同時通訳")
             .navigationBarTitleDisplayMode(.inline)
@@ -113,6 +143,106 @@ struct TranslationView: View {
     }
 
     // MARK: - Subviews
+
+    private var inputModeSelector: some View {
+        Picker("入力モード", selection: $inputMode) {
+            ForEach(InputMode.allCases, id: \.self) { mode in
+                Label(mode.rawValue, systemImage: mode.icon)
+                    .tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .onChange(of: inputMode) { _, newMode in
+            // モード切り替え時にクリア
+            if newMode == .voice {
+                speechService.clearText()
+            } else {
+                textInput = ""
+            }
+            translationService.clearTranslation()
+
+            // 音声入力中なら停止
+            if speechService.isListening {
+                speechService.stopListening()
+            }
+        }
+    }
+
+    private var textInputView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // ヘッダー
+            HStack {
+                Text(sourceLanguage.name)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if !textInput.isEmpty {
+                    Button {
+                        textInput = ""
+                        translationService.clearTranslation()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // テキスト入力フィールド
+            TextField("ここに入力...", text: $textInput, axis: .vertical)
+                .font(.body)
+                .lineLimit(5...10)
+                .focused($isTextFieldFocused)
+                .submitLabel(.done)
+                .onSubmit {
+                    translateTextInput()
+                }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(.secondarySystemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(isTextFieldFocused ? Color.blue.opacity(0.5) : Color.clear, lineWidth: 2)
+                )
+        )
+    }
+
+    private var textInputControlView: some View {
+        VStack(spacing: 16) {
+            // 翻訳ボタン
+            Button {
+                translateTextInput()
+            } label: {
+                HStack {
+                    Image(systemName: "doc.text")
+                    Text("翻訳")
+                }
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(textInput.isEmpty ? Color.gray : Color.blue)
+                .cornerRadius(12)
+            }
+            .disabled(textInput.isEmpty)
+            .padding(.horizontal)
+
+            // ステータステキスト
+            Text(textInput.isEmpty ? "テキストを入力してください" : "翻訳ボタンをタップ")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 24)
+        .padding(.bottom, 8)
+        .background(Color(.systemBackground))
+    }
 
     private var headerView: some View {
         VStack(spacing: 12) {
@@ -172,6 +302,54 @@ struct TranslationView: View {
     }
 
     // MARK: - Actions
+
+    /// テキスト入力を翻訳
+    private func translateTextInput() {
+        guard !textInput.isEmpty else { return }
+
+        // キーボードを閉じる
+        isTextFieldFocused = false
+
+        Task {
+            await translationService.translate(
+                text: textInput,
+                from: sourceLanguage.id,
+                to: targetLanguage.id
+            )
+
+            // 自動読み上げ
+            if appSettings.autoSpeak && !translationService.translatedText.isEmpty {
+                ttsService.speak(text: translationService.translatedText, language: targetLanguage.speechCode)
+            }
+
+            // 履歴に保存
+            saveTextInputToHistory()
+        }
+    }
+
+    /// テキスト入力を履歴に保存
+    private func saveTextInputToHistory() {
+        let sourceText = textInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translatedText = translationService.translatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !sourceText.isEmpty,
+              !translatedText.isEmpty,
+              sourceText != lastSavedSourceText else {
+            return
+        }
+
+        let record = TranslationRecord(
+            sourceText: sourceText,
+            translatedText: translatedText,
+            sourceLanguage: sourceLanguage.id,
+            targetLanguage: targetLanguage.id
+        )
+
+        modelContext.insert(record)
+        lastSavedSourceText = sourceText
+
+        print("📝 履歴に保存: \(sourceText) → \(translatedText)")
+    }
 
     private func swapLanguages() {
         // 録音中なら停止
