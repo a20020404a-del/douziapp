@@ -76,9 +76,14 @@ struct Language: Identifiable, Hashable {
     /// 英語（デフォルト）
     static let english = allLanguages.first { $0.id == "en" }!
 
-    /// 日本語以外の言語（入力言語として選択可能）
+    /// すべての言語（入力言語として選択可能）
     static var sourceLanguages: [Language] {
-        allLanguages.filter { $0.id != "ja" }
+        allLanguages
+    }
+
+    /// すべての言語（出力言語として選択可能）
+    static var targetLanguages: [Language] {
+        allLanguages
     }
 
     /// IDで言語を検索
