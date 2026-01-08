@@ -2,7 +2,7 @@
 //  TranslationView.swift
 //  douziapp
 //
-//  メイン翻訳画面 - リアルタイム同時通訳UI
+//  メイン翻訳画面 - 世界中の言語から日本語への同時通訳UI
 //
 
 import SwiftUI
@@ -16,21 +16,17 @@ struct TranslationView: View {
     @EnvironmentObject var appSettings: AppSettings
 
     @State private var showingPermissionAlert = false
-    @State private var isEnglishToJapanese = true // true: EN→JA, false: JA→EN
-    @State private var lastSavedSourceText: String = "" // 重複保存防止用
+    @State private var showingLanguagePicker = false
+    @State private var selectedLanguage: Language = .english
+    @State private var lastSavedSourceText: String = ""
 
-    var sourceLanguage: (code: String, name: String, flag: String) {
-        isEnglishToJapanese ? ("en-US", "English", "🇺🇸") : ("ja-JP", "日本語", "🇯🇵")
-    }
-
-    var targetLanguage: (code: String, name: String, flag: String) {
-        isEnglishToJapanese ? ("ja-JP", "日本語", "🇯🇵") : ("en-US", "English", "🇺🇸")
-    }
+    // ターゲットは常に日本語
+    private let targetLanguage: Language = .japanese
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // ヘッダー（言語切り替えボタン付き）
+                // ヘッダー（言語選択）
                 headerView
 
                 ScrollView {
@@ -46,7 +42,7 @@ struct TranslationView: View {
                         // 原文表示エリア
                         SourceTextCard(
                             text: speechService.recognizedText,
-                            language: sourceLanguage.name,
+                            language: selectedLanguage.name,
                             isActive: speechService.isListening
                         )
 
@@ -82,20 +78,25 @@ struct TranslationView: View {
             } message: {
                 Text("音声認識を使用するには、設定でマイクへのアクセスを許可してください。")
             }
+            .sheet(isPresented: $showingLanguagePicker) {
+                LanguagePickerView(selectedLanguage: $selectedLanguage) {
+                    onLanguageChanged()
+                }
+            }
         }
         .onChange(of: speechService.recognizedText) { _, newValue in
             guard !newValue.isEmpty else { return }
             Task {
                 await translationService.translate(
                     text: newValue,
-                    from: isEnglishToJapanese ? "en" : "ja",
-                    to: isEnglishToJapanese ? "ja" : "en"
+                    from: selectedLanguage.id,
+                    to: targetLanguage.id
                 )
             }
         }
         .onChange(of: translationService.translatedText) { _, newValue in
             guard !newValue.isEmpty, appSettings.autoSpeak else { return }
-            ttsService.speak(text: newValue, language: targetLanguage.code)
+            ttsService.speak(text: newValue, language: targetLanguage.speechCode)
         }
     }
 
@@ -103,24 +104,51 @@ struct TranslationView: View {
 
     private var headerView: some View {
         VStack(spacing: 12) {
-            // 言語表示 + 切り替えボタン
+            // 言語表示 + 選択ボタン
             HStack(spacing: 16) {
-                // ソース言語
-                LanguageBadge(language: sourceLanguage.flag, flag: isEnglishToJapanese ? "EN" : "JA")
-
-                // 切り替えボタン
+                // ソース言語（タップで変更可能）
                 Button {
-                    switchLanguages()
+                    showingLanguagePicker = true
                 } label: {
-                    Image(systemName: "arrow.left.arrow.right.circle.fill")
-                        .font(.title)
-                        .foregroundStyle(.blue)
-                        .symbolEffect(.bounce, value: isEnglishToJapanese)
+                    HStack(spacing: 8) {
+                        Text(selectedLanguage.flag)
+                            .font(.title)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(selectedLanguage.name)
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Text("タップで変更")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(10)
                 }
                 .buttonStyle(.plain)
 
-                // ターゲット言語
-                LanguageBadge(language: targetLanguage.flag, flag: isEnglishToJapanese ? "JA" : "EN")
+                // 矢印
+                Image(systemName: "arrow.right")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+
+                // ターゲット言語（日本語固定）
+                HStack(spacing: 8) {
+                    Text(targetLanguage.flag)
+                        .font(.title)
+                    Text(targetLanguage.name)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.blue.opacity(0.1))
+                .cornerRadius(10)
             }
 
             // ステータス表示
@@ -151,19 +179,14 @@ struct TranslationView: View {
 
     // MARK: - Actions
 
-    private func switchLanguages() {
+    private func onLanguageChanged() {
         // 録音中なら停止
         if speechService.isListening {
             speechService.stopListening()
         }
 
-        // 言語切り替え
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-            isEnglishToJapanese.toggle()
-        }
-
         // 音声認識の言語を変更
-        speechService.setLanguage(sourceLanguage.code)
+        speechService.setLanguage(selectedLanguage.speechCode)
 
         // テキストをクリア
         speechService.clearText()
@@ -185,7 +208,7 @@ struct TranslationView: View {
                 if authorized {
                     do {
                         // 現在の言語で認識開始
-                        speechService.setLanguage(sourceLanguage.code)
+                        speechService.setLanguage(selectedLanguage.speechCode)
                         try speechService.startListening()
                     } catch {
                         print("録音開始エラー: \(error)")
@@ -212,14 +235,106 @@ struct TranslationView: View {
         let record = TranslationRecord(
             sourceText: sourceText,
             translatedText: translatedText,
-            sourceLanguage: isEnglishToJapanese ? "en" : "ja",
-            targetLanguage: isEnglishToJapanese ? "ja" : "en"
+            sourceLanguage: selectedLanguage.id,
+            targetLanguage: targetLanguage.id
         )
 
         modelContext.insert(record)
         lastSavedSourceText = sourceText
 
         print("📝 履歴に保存: \(sourceText) → \(translatedText)")
+    }
+}
+
+// MARK: - Language Picker View
+
+struct LanguagePickerView: View {
+    @Binding var selectedLanguage: Language
+    let onSelect: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var searchText = ""
+
+    var filteredLanguages: [Language] {
+        let languages = Language.sourceLanguages
+        if searchText.isEmpty {
+            return languages
+        }
+        return languages.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.localName.localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    // 地域でグループ化
+    var groupedLanguages: [(String, [Language])] {
+        let groups: [(String, [String])] = [
+            ("よく使う", ["en", "zh", "ko"]),
+            ("東アジア", ["zh", "zh-TW", "ko"]),
+            ("東南アジア", ["th", "vi", "id", "ms", "tl"]),
+            ("南アジア", ["hi", "bn", "ta"]),
+            ("中東", ["ar", "fa", "he", "tr"]),
+            ("ヨーロッパ（西）", ["en", "en-GB", "fr", "de", "es", "pt", "pt-BR", "it", "nl"]),
+            ("ヨーロッパ（北）", ["sv", "no", "da", "fi"]),
+            ("ヨーロッパ（東）", ["ru", "pl", "uk", "cs", "hu", "ro", "el"]),
+            ("アフリカ", ["sw", "af"])
+        ]
+
+        if !searchText.isEmpty {
+            return [("検索結果", filteredLanguages)]
+        }
+
+        return groups.compactMap { (name, ids) in
+            let languages = ids.compactMap { id in
+                filteredLanguages.first { $0.id == id }
+            }
+            return languages.isEmpty ? nil : (name, languages)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(groupedLanguages, id: \.0) { group, languages in
+                    Section(group) {
+                        ForEach(languages) { language in
+                            Button {
+                                selectedLanguage = language
+                                onSelect()
+                                dismiss()
+                            } label: {
+                                HStack {
+                                    Text(language.flag)
+                                        .font(.title2)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(language.name)
+                                            .foregroundStyle(.primary)
+                                        Text(language.localName)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if language.id == selectedLanguage.id {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(.blue)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("入力言語を選択")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "言語を検索")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("閉じる") {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 

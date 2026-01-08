@@ -143,12 +143,24 @@ struct HistoryView: View {
 struct HistoryRowView: View {
     let record: TranslationRecord
 
+    private var sourceLanguage: Language? {
+        Language.find(by: record.sourceLanguage)
+    }
+
+    private var targetLanguage: Language? {
+        Language.find(by: record.targetLanguage)
+    }
+
     private var sourceFlag: String {
-        record.sourceLanguage == "en" ? "🇺🇸" : "🇯🇵"
+        sourceLanguage?.flag ?? "🌐"
     }
 
     private var targetFlag: String {
-        record.targetLanguage == "en" ? "🇺🇸" : "🇯🇵"
+        targetLanguage?.flag ?? "🇯🇵"
+    }
+
+    private var sourceName: String {
+        sourceLanguage?.name ?? record.sourceLanguage
     }
 
     var body: some View {
@@ -161,6 +173,9 @@ struct HistoryRowView: View {
                 Spacer()
                 Text("\(sourceFlag)→\(targetFlag)")
                     .font(.caption2)
+                Text(sourceName)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             // 原文
